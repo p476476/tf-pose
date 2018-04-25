@@ -8,6 +8,7 @@ import numpy as np
 
 from estimator import TfPoseEstimator
 from networks import get_graph_path, model_wh
+import common
 
 #====================
 from socket import socket, AF_INET, SOCK_STREAM
@@ -31,6 +32,12 @@ current_text_index=-1
 is_tracking = False
 logger=None
 window=None
+
+class JointDepthData:
+    def __init__(self,number,depth):
+        self.jn=number
+        self.dp=depth
+
 #   更新聊天室的訊息    
 def update_chat_text():
     global current_text_index,chating_room,chat_text
@@ -72,6 +79,25 @@ def doCNNTracking(args):
     image = np.asanyarray(image_data)
 
     logger.info('cam image=%dx%d' % (image.shape[1], image.shape[0]))
+    
+    
+    clip_scale = 0.16
+    clip_disp = 0
+    depth_image_frame = frames.get_depth_frame()
+    depth_image_data = depth_image_frame.as_frame().get_data()
+    depth_image = np.asanyarray(depth_image_data)
+    
+    
+    
+    
+    
+    logger.info('cam depth image=%dx%d' % (depth_image.shape[1], depth_image.shape[0])) 
+    
+    clip_x_scale = depth_image.shape[0]*clip_scale
+    clip_y_scale = depth_image.shape[1]*clip_scale*1.5
+    clip_box = [clip_x_scale,depth_image.shape[0]-clip_x_scale,clip_y_scale+clip_disp,depth_image.shape[1]-clip_y_scale+clip_disp]
+    print("clip:")
+    print(clip_box)
 
     while (True):
         if(is_tracking):
@@ -79,8 +105,12 @@ def doCNNTracking(args):
             image_frame = frames.get_color_frame()
             image_data = image_frame.as_frame().get_data()
             image = np.asanyarray(image_data)
-
-
+            depth_image_frame = frames.get_depth_frame()
+            depth_image_data = depth_image_frame.as_frame().get_data()
+            depth_image = np.asanyarray(depth_image_data)
+            depth_image = depth_image[(int)(clip_box[0]):(int)(clip_box[1]),(int)(clip_box[2]):(int)(clip_box[3])]
+            depth_image = cv2.resize(depth_image, (640, 480), interpolation=cv2.INTER_CUBIC)
+            
             if args.zoom < 1.0:
                 canvas = np.zeros_like(image)
                 img_scaled = cv2.resize(image, None, fx=args.zoom, fy=args.zoom, interpolation=cv2.INTER_LINEAR)
@@ -96,28 +126,78 @@ def doCNNTracking(args):
 
             humans = e.inference(image)
             jdata = TfPoseEstimator.get_json_data(image.shape[0],image.shape[1],humans)
+            if(len(jdata)>2):
+                try:
+                    #傳送Position資料至SERVER
+                    chating_room.sendTrackingData(jdata,'track')
+                except:
+                    print("Cannot send data to server.")
+            cv2.imshow('tf-pose-estimation result0', image)
+            #計算深度資料
+            depthDatas=[]
+            image_h, image_w = image.shape[:2]
+            # dimage_h, dimage_w = depth_image.shape[:2]
+            # print('h'+str(image_h)+" "+str(dimage_h))
+            # print('w'+str(image_w)+" "+str(dimage_w))
+            for human in humans:
+                # get point
+                for i in range(common.CocoPart.Background.value):
+                    if i not in human.body_parts.keys():
+                        continue
+                    body_part = human.body_parts[i]
+                    y= int(body_part.y * image_h+ 0.5)
+                    x = int(body_part.x * image_w + 0.5)
+                    s=5;
+                    mat = depth_image[y-s if(y-s>=0) else 0:y+s if(y+s<=479) else 479,x-s if(x-s>=0) else 0:x+s if (x+s<=639) else 639]
 
-            try:
-            #傳送資料至SERVER
-                if(len(jdata)>2):
-                    chating_room.sendTrackingData(jdata)
-            except:
-                print("Cannot send data to server.")
+                    count=0;
+                    sum_depth=0;
+
+                    for j in range (mat.shape[0]):
+                        for k in range (mat.shape[1]):
+                            
+                            if mat[j,k]<3000 and mat[j,k]>1000:
+
+                                sum_depth+=mat[j,k]
+                                count+=1
+                    if(count>0):
+                        depth=sum_depth/count
+                    else:
+                        depth=0
+                    try:
+                        
+                        
+                        # depth = np.median(mat).astype(float)
+                        print(depth)
+                        depthDatas.append(JointDepthData(i,depth).__dict__)
+                    except:
+                        print("err:"+str(x)+" "+str(y)+" "+str(body_part.x )+" "+str(body_part.y ))
+                    
+
+            depth_jdata=json.dumps(depthDatas)
+            if(len(depth_jdata)>2):
+                try:
+                    #傳送Depth資料至SERVER
+                    print(depth_jdata)
+                    chating_room.sendTrackingData(depth_jdata,'track_depth')
+                    
+                except:
+                    print("Cannot send depth data to server.")
+            depth_image =  cv2.applyColorMap(cv2.convertScaleAbs(depth_image/25), cv2.COLORMAP_JET)
             
-            image = TfPoseEstimator.draw_humans(image, humans, imgcopy=False)
-
+            image = TfPoseEstimator.draw_humans(depth_image, humans, imgcopy=False)
 
             cv2.putText(image,
                         "FPS: %f" % (1.0 / (time.time() - fps_time)),
                         (10, 10),  cv2.FONT_HERSHEY_SIMPLEX, 0.5,
                         (0, 255, 0), 2)
+            
             cv2.imshow('tf-pose-estimation result', image)
+            
             fps_time = time.time()
             if cv2.waitKey(1) == 27:
                 break
             time.sleep(0.07)
-        else:
-            break
 
     cv2.destroyAllWindows()
 
@@ -252,9 +332,6 @@ class SocketClient(socket):
         setShape(gettime_btn,GETTIME_BTN_SHAPE,'nw')
 
         def startTracking():
-            #  執行追蹤threading   
-            th = threading.Thread(target=doCNNTracking, args = (cnn_args,))
-            th.start()
             global is_tracking,logger
             logger.info('Start Tracking')
             is_tracking = True
@@ -279,8 +356,12 @@ class SocketClient(socket):
         global logger
         while 1:
             data = self.serversocket.recv(8192)
-            
-            jdata = json.loads(data)
+            try:
+                jdata = json.loads(data)
+            except:
+                print("get error json")
+                print(data)
+                continue
             logger.info('got data=>' + jdata['cmd'])
             recv_cmd = jdata['cmd']
             
@@ -327,8 +408,8 @@ class SocketClient(socket):
     def sendString(self,string):
         self.serversocket.send(str.encode(string)) 
 #     sendString()負責傳送一段句子到server
-    def sendTrackingData(self,string):
-        msg = {'cmd':'track','name':self.username, 'data':string}
+    def sendTrackingData(self,string,cmd):
+        msg = {'cmd':cmd,'name':self.username, 'data':string}
         jmsg = json.dumps(msg)
         # print(jmsg)
         self.sendString(jmsg) 
@@ -373,7 +454,7 @@ class SocketClient(socket):
 # 以下為主程式碼
 # ==========================
 def main():
-    global chating_room,window,chat_text,logger
+    global chating_room,window,chat_text,logger,cnn_args
     current_text_index=-1
 
 #    引入參數   
@@ -395,8 +476,10 @@ def main():
     ch.setFormatter(formatter)
     logger.addHandler(ch)
 
-    
-    
+#  執行追蹤threading 
+    th = threading.Thread(target=doCNNTracking, args = (cnn_args,))
+    th.start()    
+
 #    產生程式視窗並初始化
     window = tk.Tk()
     window.title('RemChat')

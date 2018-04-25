@@ -336,6 +336,7 @@ class TfPoseEstimator:
 
         return json.dumps(jointDatas)
     
+    
     def _get_scaled_img(self, npimg, scale):
         get_base_scale = lambda s, w, h: max(self.target_size[0] / float(w), self.target_size[1] / float(h)) * s
         img_h, img_w = npimg.shape[:2]
