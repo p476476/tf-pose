@@ -74,42 +74,55 @@ def doCNNTracking(args):
     pipeline.start()
     
     frames = pipeline.wait_for_frames()
-    image_frame = frames.get_color_frame()
-    image_data = image_frame.as_frame().get_data()
-    image = np.asanyarray(image_data)
-
-    logger.info('cam image=%dx%d' % (image.shape[1], image.shape[0]))
-    
-    
-    clip_scale = 0.16
-    clip_disp = 0
-    depth_image_frame = frames.get_depth_frame()
-    depth_image_data = depth_image_frame.as_frame().get_data()
+    #get depth影像
+    depth = frames.get_depth_frame() 
+    depth_image_data = depth.as_frame().get_data()
     depth_image = np.asanyarray(depth_image_data)
     
     
     
-    
-    
     logger.info('cam depth image=%dx%d' % (depth_image.shape[1], depth_image.shape[0])) 
+    logger.info('camera ready') 
     
-    clip_x_scale = depth_image.shape[0]*clip_scale
-    clip_y_scale = depth_image.shape[1]*clip_scale*1.5
-    clip_box = [clip_x_scale,depth_image.shape[0]-clip_x_scale,clip_y_scale+clip_disp,depth_image.shape[1]-clip_y_scale+clip_disp]
-    print("clip:")
-    print(clip_box)
+    
+    #計算depth影像對應至rgb影像的clip
+    clip_box = [100,-100,290,-300]
+    
 
     while (True):
         if(is_tracking):
+            
             frames = pipeline.wait_for_frames()
+            #get rgb影像
             image_frame = frames.get_color_frame()
             image_data = image_frame.as_frame().get_data()
             image = np.asanyarray(image_data)
-            depth_image_frame = frames.get_depth_frame()
-            depth_image_data = depth_image_frame.as_frame().get_data()
+
+            #get depth影像
+            depth = frames.get_depth_frame() 
+            depth_image_data = depth.as_frame().get_data()
             depth_image = np.asanyarray(depth_image_data)
             depth_image = depth_image[(int)(clip_box[0]):(int)(clip_box[1]),(int)(clip_box[2]):(int)(clip_box[3])]
             depth_image = cv2.resize(depth_image, (640, 480), interpolation=cv2.INTER_CUBIC)
+            depth_image=depth_image/30
+            depth_image.astype(np.uint8)
+            thresh=cv2.inRange(depth_image,20,130)
+
+            kernel = cv2.getStructuringElement(cv2.MORPH_RECT,(3, 3))  
+            eroded = cv2.erode(thresh,kernel)
+            kernel2 = cv2.getStructuringElement(cv2.MORPH_RECT,(7, 7))  
+            dilated = cv2.dilate(eroded,kernel2)
+
+            bright_mask = np.zeros(image.shape);
+            bright_mask.fill(130)
+            bright_mask = bright_mask.astype(np.uint8);
+            bright_mask = cv2.bitwise_and(bright_mask, bright_mask, mask=dilated)
+
+            masked_data = cv2.bitwise_and(image, image, mask=dilated)
+        
+            image = image.astype(int)+100-bright_mask.astype(int);
+            image = np.clip(image, 0, 255)
+            image = image.astype(np.uint8);
             
             if args.zoom < 1.0:
                 canvas = np.zeros_like(image)
@@ -132,72 +145,69 @@ def doCNNTracking(args):
                     chating_room.sendTrackingData(jdata,'track')
                 except:
                     print("Cannot send data to server.")
-            cv2.imshow('tf-pose-estimation result0', image)
             #計算深度資料
-            depthDatas=[]
-            image_h, image_w = image.shape[:2]
-            # dimage_h, dimage_w = depth_image.shape[:2]
-            # print('h'+str(image_h)+" "+str(dimage_h))
-            # print('w'+str(image_w)+" "+str(dimage_w))
-            for human in humans:
-                # get point
-                for i in range(common.CocoPart.Background.value):
-                    if i not in human.body_parts.keys():
-                        continue
-                    body_part = human.body_parts[i]
-                    y= int(body_part.y * image_h+ 0.5)
-                    x = int(body_part.x * image_w + 0.5)
-                    s=5;
-                    mat = depth_image[y-s if(y-s>=0) else 0:y+s if(y+s<=479) else 479,x-s if(x-s>=0) else 0:x+s if (x+s<=639) else 639]
+#             depthDatas=[]
+#             image_h, image_w = image.shape[:2]
 
-                    count=0;
-                    sum_depth=0;
+#             for human in humans:
+#                 # get point
+#                 for i in range(common.CocoPart.Background.value):
+#                     if i not in human.body_parts.keys():
+#                         continue
+#                     body_part = human.body_parts[i]
+#                     y= int(body_part.y * image_h+ 0.5)
+#                     x = int(body_part.x * image_w + 0.5)
+#                     s=5;
+#                     mat = depth_image[y-s if(y-s>=0) else 0:y+s if(y+s<=479) else 479,x-s if(x-s>=0) else 0:x+s if (x+s<=639) else 639]
 
-                    for j in range (mat.shape[0]):
-                        for k in range (mat.shape[1]):
+#                     count=0;
+#                     sum_depth=0;
+
+#                     for j in range (mat.shape[0]):
+#                         for k in range (mat.shape[1]):
                             
-                            if mat[j,k]<3000 and mat[j,k]>1000:
+#                             if mat[j,k]<3000 and mat[j,k]>1000:
 
-                                sum_depth+=mat[j,k]
-                                count+=1
-                    if(count>0):
-                        depth=sum_depth/count
-                    else:
-                        depth=0
-                    try:
+#                                 sum_depth+=mat[j,k]
+#                                 count+=1
+#                     if(count>0):
+#                         depth=sum_depth/count
+#                     else:
+#                         depth=0
+#                     try:
                         
                         
-                        # depth = np.median(mat).astype(float)
-                        print(depth)
-                        depthDatas.append(JointDepthData(i,depth).__dict__)
-                    except:
-                        print("err:"+str(x)+" "+str(y)+" "+str(body_part.x )+" "+str(body_part.y ))
+#                         # depth = np.median(mat).astype(float)
+#                         print(depth)
+#                         depthDatas.append(JointDepthData(i,depth).__dict__)
+#                     except:
+#                         print("err:"+str(x)+" "+str(y)+" "+str(body_part.x )+" "+str(body_part.y ))
                     
 
-            depth_jdata=json.dumps(depthDatas)
-            if(len(depth_jdata)>2):
-                try:
-                    #傳送Depth資料至SERVER
-                    print(depth_jdata)
-                    chating_room.sendTrackingData(depth_jdata,'track_depth')
+#             depth_jdata=json.dumps(depthDatas)
+#             if(len(depth_jdata)>2):
+#                 try:
+#                     #傳送Depth資料至SERVER
+#                     print(depth_jdata)
+#                     chating_room.sendTrackingData(depth_jdata,'track_depth')
                     
-                except:
-                    print("Cannot send depth data to server.")
-            depth_image =  cv2.applyColorMap(cv2.convertScaleAbs(depth_image/25), cv2.COLORMAP_JET)
+#                 except:
+#                     print("Cannot send depth data to server.")
+#             depth_image =  cv2.applyColorMap(cv2.convertScaleAbs(depth_image/25), cv2.COLORMAP_JET)
             
-            image = TfPoseEstimator.draw_humans(depth_image, humans, imgcopy=False)
+            image = TfPoseEstimator.draw_humans(image, humans, imgcopy=False)
 
             cv2.putText(image,
                         "FPS: %f" % (1.0 / (time.time() - fps_time)),
                         (10, 10),  cv2.FONT_HERSHEY_SIMPLEX, 0.5,
                         (0, 255, 0), 2)
             
-            cv2.imshow('tf-pose-estimation result', image)
+            cv2.imshow('tf-pose-estimation result', image[:,:,[2,1,0]])
             
-            fps_time = time.time()
-            if cv2.waitKey(1) == 27:
+            if cv2.waitKey(25) & 0xFF == ord('q'):
+                cv2.destroyAllWindows()
                 break
-            time.sleep(0.07)
+
 
     cv2.destroyAllWindows()
 

@@ -288,7 +288,13 @@ class SocketClient(socket):
                 data = self.serversocket.recv(8192)
             except:
                 break
-            jdata = json.loads(data)
+            	
+            try:
+                jdata = json.loads(data)
+            except:
+                print("not json data")
+                continue
+            
             logger.info('got data=>' + jdata['cmd'])
             recv_cmd = jdata['cmd']
             print(recv_cmd)
