@@ -19,8 +19,6 @@ import tkinter as tk
 import os
 from PIL import ImageTk as itk, Image
 import json, types,string
-import wx
-import wx.xrc
 
 # ==========================
 # 以下為一些Global函式
@@ -34,8 +32,10 @@ logger=None
 window=None
 
 class JointDepthData:
-    def __init__(self,number,depth):
+    def __init__(self,number,x,y,depth):
         self.jn=number
+        self.x = x
+        self.y = y
         self.dp=depth
 
 #   更新聊天室的訊息    
@@ -91,12 +91,16 @@ def doCNNTracking(args):
 
     while (True):
         if(is_tracking):
-            
+            fps_time = time.time()
             frames = pipeline.wait_for_frames()
             #get rgb影像
             image_frame = frames.get_color_frame()
             image_data = image_frame.as_frame().get_data()
             image = np.asanyarray(image_data)
+            
+            #change bgr 2 rgb
+            image = np.array(image[...,::-1])
+            origen_image = image
 
             #get depth影像
             depth = frames.get_depth_frame() 
@@ -106,24 +110,34 @@ def doCNNTracking(args):
             depth_image = cv2.resize(depth_image, (640, 480), interpolation=cv2.INTER_CUBIC)
             depth_image=depth_image/30
             depth_image.astype(np.uint8)
-            thresh=cv2.inRange(depth_image,20,130)
+            
+            #深度去背的遮罩
+            thresh=cv2.inRange(depth_image,20,200)
 
-            kernel = cv2.getStructuringElement(cv2.MORPH_RECT,(3, 3))  
+            #去背的遮罩做影像處理
+            kernel = cv2.getStructuringElement(cv2.MORPH_RECT,(1, 1))  
             eroded = cv2.erode(thresh,kernel)
-            kernel2 = cv2.getStructuringElement(cv2.MORPH_RECT,(7, 7))  
+            kernel2 = cv2.getStructuringElement(cv2.MORPH_RECT,(5, 5))  
             dilated = cv2.dilate(eroded,kernel2)
-
+            
+            #亮度遮罩
             bright_mask = np.zeros(image.shape);
-            bright_mask.fill(130)
+            bright_mask.fill(200)
             bright_mask = bright_mask.astype(np.uint8);
             bright_mask = cv2.bitwise_and(bright_mask, bright_mask, mask=dilated)
-
-            masked_data = cv2.bitwise_and(image, image, mask=dilated)
-        
-            image = image.astype(int)+100-bright_mask.astype(int);
+            
+            #rgb影像亮度處理
+#             image = cv2.bitwise_and(image, image, mask=dilated)
+            
+            image = image.astype(int)+200-bright_mask.astype(int);
             image = np.clip(image, 0, 255)
             image = image.astype(np.uint8);
             
+
+            
+            
+            
+            #tfpose image 縮放
             if args.zoom < 1.0:
                 canvas = np.zeros_like(image)
                 img_scaled = cv2.resize(image, None, fx=args.zoom, fy=args.zoom, interpolation=cv2.INTER_LINEAR)
@@ -137,72 +151,79 @@ def doCNNTracking(args):
                 dy = (img_scaled.shape[0] - image.shape[0]) // 2
                 image = img_scaled[dy:image.shape[0], dx:image.shape[1]]
 
+            #tfpose 計算
             humans = e.inference(image)
-            jdata = TfPoseEstimator.get_json_data(image.shape[0],image.shape[1],humans)
-            if(len(jdata)>2):
-                try:
-                    #傳送Position資料至SERVER
-                    chating_room.sendTrackingData(jdata,'track')
-                except:
-                    print("Cannot send data to server.")
-            #計算深度資料
-#             depthDatas=[]
-#             image_h, image_w = image.shape[:2]
-
-#             for human in humans:
-#                 # get point
-#                 for i in range(common.CocoPart.Background.value):
-#                     if i not in human.body_parts.keys():
-#                         continue
-#                     body_part = human.body_parts[i]
-#                     y= int(body_part.y * image_h+ 0.5)
-#                     x = int(body_part.x * image_w + 0.5)
-#                     s=5;
-#                     mat = depth_image[y-s if(y-s>=0) else 0:y+s if(y+s<=479) else 479,x-s if(x-s>=0) else 0:x+s if (x+s<=639) else 639]
-
-#                     count=0;
-#                     sum_depth=0;
-
-#                     for j in range (mat.shape[0]):
-#                         for k in range (mat.shape[1]):
-                            
-#                             if mat[j,k]<3000 and mat[j,k]>1000:
-
-#                                 sum_depth+=mat[j,k]
-#                                 count+=1
-#                     if(count>0):
-#                         depth=sum_depth/count
-#                     else:
-#                         depth=0
-#                     try:
-                        
-                        
-#                         # depth = np.median(mat).astype(float)
-#                         print(depth)
-#                         depthDatas.append(JointDepthData(i,depth).__dict__)
-#                     except:
-#                         print("err:"+str(x)+" "+str(y)+" "+str(body_part.x )+" "+str(body_part.y ))
-                    
-
-#             depth_jdata=json.dumps(depthDatas)
-#             if(len(depth_jdata)>2):
-#                 try:
-#                     #傳送Depth資料至SERVER
-#                     print(depth_jdata)
-#                     chating_room.sendTrackingData(depth_jdata,'track_depth')
-                    
-#                 except:
-#                     print("Cannot send depth data to server.")
-#             depth_image =  cv2.applyColorMap(cv2.convertScaleAbs(depth_image/25), cv2.COLORMAP_JET)
             
+#             #得到joint
+#             jdata = TfPoseEstimator.get_json_data(image.shape[0],image.shape[1],humans)
+#             if(len(jdata)>2):
+#                 try:
+#                     #傳送Position資料至SERVER
+#                     chating_room.sendTrackingData(jdata,'track')
+#                 except:
+#                     print("Cannot send data to server.")
+           
+            
+            #去背後深度影像
+            depth_masked = cv2.bitwise_and(depth_image, depth_image, mask=dilated)
+            
+            human_json_datas = []
+            for human in humans:
+                #計算深度資料
+                depthDatas=[]
+                image_h, image_w = image.shape[:2]
+                # get point
+                for i in range(common.CocoPart.Background.value):
+                    if i not in human.body_parts.keys():
+                        continue
+                    body_part = human.body_parts[i]
+                    y= int(body_part.y * image_h+ 0.5)
+                    x = int(body_part.x * image_w + 0.5)
+                    s=5;
+                    mat = depth_masked[y-s if(y-s>=0) else 0:y+s if(y+s<=479) else 479,x-s if(x-s>=0) else 0:x+s if (x+s<=639) else 639]
+
+                    count=0;
+                    sum_depth=0;
+
+                    for j in range (mat.shape[0]):
+                        for k in range (mat.shape[1]):     
+                            if mat[j,k]!=0:
+                                sum_depth+=mat[j,k]
+                                count+=1
+                                
+                    if(count>0):
+                        depth=sum_depth/count
+                    else:
+                        depth=0
+                        
+                    try:
+                        depthDatas.append(JointDepthData(i,x,y,depth).__dict__)
+                    except:
+                        print("err:"+str(x)+" "+str(y)+" "+str(body_part.x )+" "+str(body_part.y ))
+                    
+
+                human_json_datas.append(json.dumps(depthDatas))
+            json_data = json.dumps(human_json_datas)
+            if(len(json_data)>2):
+                try:
+                    #傳送Depth資料至SERVER
+                    chating_room.sendTrackingData(json_data,'track_depth')
+                except:
+                    print("Cannot send depth data to server.")
+                        
+            depth_image =  cv2.applyColorMap(cv2.convertScaleAbs(depth_image/25), cv2.COLORMAP_JET)
+            cv2.circle(image,(320,240), 5, (255,255,255), -1)
+            cv2.circle(image,(304,480-98), 5, (0,0,255), -1)
+            cv2.circle(image,(377,480-197), 5, (0,160,255), -1)
+            cv2.circle(image,(106,480-49), 5, (0,255,255), -1)
+            cv2.circle(image,(460,480-136), 5, (0,255,0), -1)
+            cv2.circle(image,(481,480-134), 5, (255,0,0), -1)
+            cv2.circle(image,(85,480-143), 5, (255,160,0), -1)
             image = TfPoseEstimator.draw_humans(image, humans, imgcopy=False)
 
-            cv2.putText(image,
-                        "FPS: %f" % (1.0 / (time.time() - fps_time)),
-                        (10, 10),  cv2.FONT_HERSHEY_SIMPLEX, 0.5,
-                        (0, 255, 0), 2)
+            cv2.putText(image,"FPS: %f" % (1.0 / (time.time() - fps_time)),(10, 10),  cv2.FONT_HERSHEY_SIMPLEX, 0.5,(0, 255, 0), 2)
             
-            cv2.imshow('tf-pose-estimation result', image[:,:,[2,1,0]])
+            cv2.imshow('tf-pose-estimation result', image)
             
             if cv2.waitKey(25) & 0xFF == ord('q'):
                 cv2.destroyAllWindows()

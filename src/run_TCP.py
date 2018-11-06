@@ -140,7 +140,7 @@ class SocketClient(socket):
     #     HERE IS SERVER INIT
     #     =====================    
     def __init__(self,ip_,port_,username):
-        self.serversocket= socket(AF_INET, SOCK_STREAM)
+        self._serversocket= socket(AF_INET, SOCK_STREAM)
         self.serverip = ip_
         self.serverport = port_
         self.init_UI(username)
